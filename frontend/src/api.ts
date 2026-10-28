@@ -1,7 +1,10 @@
 import type { Filters, HorizonResponse, Meta, MetricsResponse, TimeseriesResponse } from './types'
 
-// Relative base URL: the Vite proxy (dev), nginx (Docker) and Vercel all serve /api.
-const BASE = import.meta.env.VITE_API_BASE ?? '/api'
+// Backend origin. Set VITE_API_URL at build time (e.g. the backend's Vercel URL); it
+// defaults to the local FastAPI server. An empty string means same-origin, which the
+// Docker image uses because nginx proxies /api to the backend container.
+const API_URL = (import.meta.env.VITE_API_URL ?? 'http://localhost:8000').replace(/\/+$/, '')
+const BASE = `${API_URL}/api`
 
 async function get<T>(path: string, params: Record<string, string | number> = {}, signal?: AbortSignal): Promise<T> {
   const query = new URLSearchParams(Object.entries(params).map(([k, v]) => [k, String(v)]))

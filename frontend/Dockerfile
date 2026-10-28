@@ -4,6 +4,9 @@ WORKDIR /app
 COPY package.json package-lock.json ./
 RUN npm ci
 COPY . .
+# Empty = same-origin: the browser calls /api on nginx, which proxies to the backend.
+ARG VITE_API_URL=""
+ENV VITE_API_URL=$VITE_API_URL
 RUN npm run build
 
 # --- Serve it with nginx, proxying /api to the backend service ---
