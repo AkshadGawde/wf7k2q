@@ -71,3 +71,26 @@ def test_missing_forecasts_are_null_and_excluded_from_metrics() -> None:
     summary = client.get("/api/metrics", params=params).json()["summary"]
     assert summary["n"] == len(points) - len(missing)
     assert summary["coverage_pct"] == pytest.approx(summary["n"] / len(points) * 100)
+
+
+def test_root_redirects_to_docs() -> None:
+    response = client.get("/", follow_redirects=False)
+    assert response.status_code in (307, 302) and response.headers["location"] == "/api/docs"
+
+
+@pytest.mark.parametrize(
+    ("origin", "allowed"),
+    [("http://localhost:5173", True), ("http://localhost:8080", True), ("https://evil.example.com", False)],
+)
+def test_cors_allows_only_known_origins(origin: str, allowed: bool) -> None:
+    response = client.get("/api/health", headers={"Origin": origin})
+    assert (response.headers.get("access-control-allow-origin") == origin) is allowed
+
+
+def test_frontend_url_env_adds_origins(monkeypatch: pytest.MonkeyPatch) -> None:
+    from app import config
+
+    monkeypatch.setenv("FRONTEND_URL", "https://wind.vercel.app/, https://preview.vercel.app")
+    origins = config.allowed_origins()
+    assert "https://wind.vercel.app" in origins and "https://preview.vercel.app" in origins
+    assert "http://localhost:5173" in origins

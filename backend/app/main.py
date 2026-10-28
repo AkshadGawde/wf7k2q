@@ -1,7 +1,8 @@
 """FastAPI application exposing the wind forecast accuracy API under /api.
 
-All routes live under /api so the same app works behind the Vite dev proxy, the
-nginx container and Vercel's /api rewrite without path rewriting.
+All routes live under /api, so the same app serves the nginx proxy in Docker and a
+standalone Vercel deployment. Browsers on other origins (the Vercel frontend, local
+dev servers) are allowed via CORS; see config.allowed_origins().
 """
 
 from datetime import date, time
@@ -9,7 +10,9 @@ from typing import Annotated, Any
 
 import pandas as pd
 from fastapi import Depends, FastAPI, HTTPException, Query, Request, Response
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
+from fastapi.responses import RedirectResponse
 
 from . import analysis, config
 from .schemas import (
@@ -29,6 +32,12 @@ app = FastAPI(
     openapi_url="/api/openapi.json",
 )
 app.add_middleware(GZipMiddleware, minimum_size=1000)
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=config.allowed_origins(),
+    allow_methods=["GET"],
+    allow_headers=["*"],
+)
 
 
 @app.middleware("http")
@@ -76,6 +85,12 @@ def _optional(value: Any) -> Any:
     if pd.isna(value):
         return None
     return value.to_pydatetime() if isinstance(value, pd.Timestamp) else value
+
+
+@app.get("/", include_in_schema=False)
+def root() -> RedirectResponse:
+    """The API has no UI of its own; send visitors to the interactive docs."""
+    return RedirectResponse("/api/docs")
 
 
 @app.get("/api/health")

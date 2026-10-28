@@ -27,3 +27,17 @@ DEFAULT_CUTOFF_DAYS_BEFORE = 1
 DEFAULT_CONFIDENCE = 0.90
 
 DATA_DIR = Path(os.environ.get("WIND_DATA_DIR", Path(__file__).resolve().parent.parent / "data"))
+
+# Browser origins allowed to call the API (CORS). FRONTEND_URL holds the deployed
+# frontend's origin, e.g. https://wind-dashboard.vercel.app (comma-separate several).
+LOCAL_ORIGINS = (
+    "http://localhost:5173",  # vite dev
+    "http://127.0.0.1:5173",
+    "http://localhost:4173",  # vite preview
+    "http://localhost:8080",  # docker compose frontend
+)
+
+
+def allowed_origins() -> list[str]:
+    extra = [o.strip().rstrip("/") for o in os.environ.get("FRONTEND_URL", "").split(",") if o.strip()]
+    return [*LOCAL_ORIGINS, *extra]
