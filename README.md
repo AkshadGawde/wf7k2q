@@ -45,7 +45,7 @@ docker compose up --build
 
 ### Local development
 
-Requirements: Python 3.12+, Node 20+.
+Requirements: Python 3.12+, Node 20.19+ or 22.12+ (`frontend/.nvmrc` pins 22; run `nvm use`).
 
 ```bash
 # Backend
@@ -54,8 +54,9 @@ python3.12 -m venv .venv
 .venv/bin/pip install -r requirements-dev.txt
 .venv/bin/uvicorn app.main:app --reload --port 8000
 
-# Frontend (second terminal). Vite proxies /api to 127.0.0.1:8000
+# Frontend (second terminal). Calls http://localhost:8000 unless VITE_API_URL is set
 cd frontend
+nvm use                # Node 22
 npm install
 npm run dev            # http://localhost:5173
 ```
@@ -63,7 +64,7 @@ npm run dev            # http://localhost:5173
 ### Tests
 
 ```bash
-cd backend && .venv/bin/pytest -q          # 29 tests
+cd backend && .venv/bin/pytest -q          # 39 tests
 cd frontend && npm run lint && npm run build  # type-check + lint
 ```
 
@@ -112,31 +113,69 @@ python scripts/verify_curtailment.py               # about 30 s; --periods <ISO 
 │   │   ├── metrics.py            MAE, RMSE, bias, nMAE, percentiles, by hour/day, horizon, buffer
 │   │   ├── analysis.py           Glue: loads data once, memoises results per parameter set
 │   │   ├── schemas.py            Pydantic response models (the API contract)
-│   │   └── main.py               REST endpoints, validation, cache headers, gzip
+│   │   └── main.py               REST endpoints, validation, CORS, cache headers, gzip
+│   ├── index.py                  Vercel entry point (re-exports app.main:app)
+│   ├── vercel.json               Vercel function config (keeps tests out of the bundle)
 │   ├── data/                     Committed January 2026 snapshot (FUELHH + WINDFOR)
 │   ├── scripts/
 │   │   ├── refresh_data.py       Re-downloads the snapshot
 │   │   ├── verify_trace_hours.py Independent trace of random hours vs the app
 │   │   ├── verify_metrics.py     Independent recomputation of the headline metrics
 │   │   └── verify_curtailment.py Offline PN/BOALF check of the bias (not used by the app)
-│   ├── tests/                    pytest: processing, metrics, API
+│   ├── tests/                    pytest: processing, metrics, missing data, API, CORS
 │   ├── requirements.txt          Runtime dependencies (pinned)
 │   ├── requirements-dev.txt      + pytest
 │   └── Dockerfile
 ├── frontend/                     React + TypeScript + Vite + Recharts
 │   ├── src/
 │   │   ├── App.tsx               Page layout and shared filter state
-│   │   ├── api.ts, types.ts      Typed API client mirroring backend schemas
-│   │   ├── hooks/                useApi (fetch/abort/keep-previous), useChartTheme, useDebounced
+│   │   ├── api.ts, types.ts      Typed API client (base URL from VITE_API_URL) mirroring backend schemas
+│   │   ├── hooks/                useApi (fetch/abort/keep-previous), useChartTheme, useMediaQuery
 │   │   ├── components/           Controls, KpiCards, BuyingAdvice, 5 chart components, ChartCard
 │   │   ├── format.ts             MW / time formatting (UK local time)
 │   │   └── index.css             Design tokens (light + dark), responsive layout
 │   ├── nginx.conf                Serves the build and proxies /api in Docker
 │   └── Dockerfile                Multi-stage: Node build, then nginx
 ├── docker-compose.yml            backend :8000 + frontend :8080
-├── vercel.json                   Vercel Services: /api/* → backend, everything else → frontend
 └── docs/dashboard.png
 ```
+
+---
+
+## Deployment (Vercel: two projects from this repo)
+
+Both projects are created from the same GitHub repo with **Add New → Project → Import**, each with a different **Root Directory**. Deploy the backend first, because the frontend needs its URL.
+
+### 1. Backend project
+
+| Setting | Value |
+|---|---|
+| Root Directory | `backend` |
+| Framework Preset | FastAPI (auto-detected from `requirements.txt` + `index.py`; "Other" also works) |
+| Build / Output / Install commands | leave empty (defaults) |
+| Python version | 3.12 (from `backend/.python-version`) |
+| Environment variable | `FRONTEND_URL` = the frontend's production URL, e.g. `https://wind-forecast.vercel.app` (no trailing slash; comma-separate several origins) |
+
+Vercel loads `backend/index.py`, which exposes the FastAPI `app`, installs `backend/requirements.txt`, and bundles `backend/data/` (the January snapshot), so the function never calls Elexon. Check: `https://<backend>.vercel.app/api/health` returns `{"status":"ok"}`, and `/` redirects to the Swagger docs.
+
+### 2. Frontend project
+
+| Setting | Value |
+|---|---|
+| Root Directory | `frontend` |
+| Framework Preset | Vite (auto-detected) |
+| Build Command / Output Directory | `npm run build` / `dist` (defaults) |
+| Node.js version | 22.x |
+| Environment variable | `VITE_API_URL` = the backend's production URL, e.g. `https://wind-forecast-api.vercel.app` (no `/api` suffix) |
+
+`VITE_API_URL` is baked in at build time, so **redeploy the frontend after changing it**. Likewise, redeploy the backend after setting or changing `FRONTEND_URL`.
+
+**Preview deployments:** preview URLs differ from production. Add a preview origin to `FRONTEND_URL` (comma-separated) if you need previews to talk to the production backend.
+
+| Variable | Project | Used by | Default |
+|---|---|---|---|
+| `FRONTEND_URL` | backend | CORS allow-list (`app/config.py`) | none (localhost dev origins are always allowed) |
+| `VITE_API_URL` | frontend | API base URL (`src/api.ts`) | `http://localhost:8000` (empty string = same origin, used by Docker) |
 
 ---
 
@@ -157,7 +196,7 @@ flowchart LR
     U((Trader)) --> F
 ```
 
-**Request path:** the browser always calls same-origin `/api/...`. In dev the Vite proxy forwards it, in Docker nginx does, and on Vercel a Services rewrite does. The backend serves every route under `/api`, so no path rewriting is needed anywhere.
+**Request path:** the frontend calls `${VITE_API_URL}/api/...`. On Vercel and in local dev that is a separate origin (the backend project, or `http://localhost:8000`), allowed by CORS. In Docker, `VITE_API_URL` is empty, so the browser calls same-origin `/api` and nginx proxies it to the backend container. The backend serves every route under `/api` in all three setups.
 
 **Why it fits Vercel's serverless limits:** the dataset is tiny (about 20k forecast rows), so it ships inside the function bundle instead of being fetched from Elexon per request. Data is parsed once per warm instance, and results are memoised per parameter set (cold metrics request about 0.6 s, warm about 5 ms). Responses carry `s-maxage` so Vercel's CDN can serve repeat requests without invoking the function.
 
